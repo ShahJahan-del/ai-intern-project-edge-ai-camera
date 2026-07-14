@@ -1,0 +1,13 @@
+# Visualisation & Image processing
+opencv-python-headless>=4.8.0
+
+# AI Inference (OpenVINO automatically embeds its CPU optimisation)
+ultralytics>=8.0.0
+openvino>=2023.0.0
+
+# Numerical calculations & Data
+numpy>=1.23.0
+pandas>=1.5.0
+
+# Visualisation Dashboard
+streamlit>=1.25.0
