@@ -2,7 +2,7 @@ from config.settings import CONFIDENCE_THRESHOLD
 
 class ObjectTracker:
     """
-    Wraps Ultralytics' internal ByteTrack integration to persist customer IDs
+    Wraps Ultralytics' internal ByteTrack integration to persist IDs
     over temporal camera frame sequences.
     """
     def __init__(self, model):
