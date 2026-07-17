@@ -33,11 +33,10 @@ class AutoCalibrator:
         self.ref_keypoints, self.ref_descriptors = self.orb.detectAndCompute(self.ref_img_gray, None)
         print(f"[+] Saved new startup reference image to '{REFERENCE_IMAGE_PATH}'")
 
+    """
     def align_zones(self, current_frame, zone_door, zone_inside, width, height):
-        """
         Calculates homography matrix and transforms normalized polygons
         to match the current frame's perspective.
-        """
         # If no reference image exists yet, initialize it and return original zones
         if self.ref_img_gray is None:
             self.save_reference(current_frame)
@@ -76,6 +75,50 @@ class AutoCalibrator:
         aligned_inside = self._warp_polygon(zone_inside, H, width, height)
 
         return aligned_door, aligned_inside
+    """
+
+    def align_line(self, current_frame, crossing_line, width, height):
+        """
+        Calculates homography matrix and transforms the normalized crossing line
+        to match the current frame's perspective.
+        """
+        # If no reference image exists yet, initialize it and return original line
+        if self.ref_img_gray is None:
+            self.save_reference(current_frame)
+            return self._denormalize(crossing_line, width, height)
+
+        # Process current frame
+        current_gray = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
+        curr_kp, curr_des = self.orb.detectAndCompute(current_gray, None)
+
+        if curr_des is None or len(curr_kp) < 10:
+            print("[!] Warning: Not enough features detected. Using fallback coordinates.")
+            return self._denormalize(crossing_line, width, height)
+
+        # Match keypoints
+        matches = self.bf.match(self.ref_descriptors, curr_des)
+        matches = sorted(matches, key=lambda x: x.distance)
+
+        # We need at least 15 solid matches to compute a reliable Homography matrix
+        if len(matches) < 15:
+            print("[!] Warning: Camera shift too severe or scene too dark. Fallback active.")
+            return self._denormalize(crossing_line, width, height)
+
+        # Extract coordinates of matching points
+        src_pts = np.float32([self.ref_keypoints[m.queryIdx].pt for m in matches]).reshape(-1, 1, 2)
+        dst_pts = np.float32([curr_kp[m.trainIdx].pt for m in matches]).reshape(-1, 1, 2)
+
+        # Compute Homography Matrix using RANSAC to filter outliers
+        H, status = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+
+        if H is None:
+            print("[!] Error: Homography calculation failed. Using default coordinates.")
+            return self._denormalize(crossing_line, width, height)
+
+        # Warp normalized crossing line points
+        aligned_line = self._warp_polygon(crossing_line, H, width, height)
+
+        return aligned_line
 
     def _denormalize(self, zone, width, height):
         """Converts normalized [0.0 - 1.0] polygon coordinates to pixel spaces."""

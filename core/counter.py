@@ -12,14 +12,13 @@ class FlowCounter:
     def __init__(self):
         self.in_count = 0
         self.out_count = 0
-        # Tracks the state history of each active ID. Format: { id: [state1, state2, ...] }
-        self.user_history = {}
-        # Tracks how many frames an ID has been missing/inactive
-        self.absence_frames = {}
-        # NEW: Tracks the cooldown frame counter for each ID to prevent ping-pong effect
-        self.cooldown_counters = {}
-        # NEW: Current frame processing index
-        self.frame_index = 0
+        # Track the logical side of each active ID. Format: { id: "LEFT" or "RIGHT" }
+        self.id_states = {}
+        # The X coordinate defining our virtual crossing line (midpoint)
+        self.crossing_line_x = 0.45
+
+        # Reduced safety margin (approx. 1% of screen width) to accept late-acquired IDs
+        self.buffer = 0.01  # 1% of image width
 
         # Ensure the logs directory exists
         os.makedirs(os.path.dirname(LOG_FILE_PATH), exist_ok=True)
@@ -72,93 +71,78 @@ class FlowCounter:
         except Exception as e:
             print(f"[!] Failed to write log: {e}")
 
-    def update(self, tracking_results, width, height, active_door_poly, active_inside_poly):
-        """Updates tracking history with structural logging outputs."""
-        self.frame_index += 1
-        if tracking_results is None or tracking_results.boxes is None:
-            return self.in_count, self.out_count
+    def update(self, tracking_results, width, height, active_line):
+        current_active_ids = set()
 
-        # 1. Vérification de la détection globale
-        num_detections = len(tracking_results.boxes)
-        if num_detections > 0:
-            print(f"\n--- [FRAME INFOS] {num_detections} personne(s) détectée(s) par YOLO ---")
+        # Dynamically calculate the crossing boundary X coordinate based on the aligned line
+        if active_line is not None and len(active_line) >= 2:
+            self.crossing_line_x = float((active_line[0][0] + active_line[1][0]) / 2.0) / width
+        else:
+            self.crossing_line_x = 0.45 # Fallback midpoint if calibration not ready
 
-        current_active_ids = []
-        door_box = self._convert_poly_to_bbox(active_door_poly, width, height)
-        inside_box = self._convert_poly_to_bbox(active_inside_poly, width, height)
+        # Check if tracking_results is a list (typical of Ultralytics batch inference)
+        # and grab the first element if so.
+        results = tracking_results[0] if isinstance(tracking_results, list) else tracking_results
 
-        for i, box in enumerate(tracking_results.boxes):
-            if box.id is None:
-                print(f" [!] Personne #{i} détectée MAIS n'a pas encore reçu d'ID du Tracker (ByteTrack).")
-                continue
+        # Ensure boxes and IDs exist in the frame results
+        if results is not None and results.boxes is not None and results.boxes.id is not None:
+            # Extract tracking IDs, normalized bounding boxes (xyxyn)
+            track_ids = results.boxes.id.int().cpu().tolist()
+            boxes_norm = results.boxes.xyxyn.cpu().numpy()
 
-            track_id = int(box.id[0].item())
-            current_active_ids.append(track_id)
+            for i, track_id in enumerate(track_ids):
+                current_active_ids.add(track_id)
 
-            # 2. Extraction du point de tracking (Hanches ou Bbox Center)
-            keypoints = tracking_results.keypoints[i] if tracking_results.keypoints is not None else None
-            point = self._get_tracking_point(keypoints)
-            point_type = "Hanches"
+                # Extract normalized x coordinates (center of bounding box)
+                bbox = boxes_norm[i]
+                x1, y1, x2, y2 = bbox[0], bbox[1], bbox[2], bbox[3]
+                norm_x = float((x1 + x2) / 2.0)
 
-            if point is None:
-                xyxy = box.xyxy[0]
-                point = (float((xyxy[0] + xyxy[2]) / 2), float((xyxy[1] + xyxy[3]) / 2))
-                point_type = "Centre Bounding Box (Fallback)"
+                # DEBUG: Uncomment to see the exact positions of IDs in real-time
+                print(f"[DEBUG ID #{track_id}] X Position: {norm_x:.3f} | Target Line: {self.crossing_line_x:.3f}")
 
-            norm_x, norm_y = point[0] / width, point[1] / height
-            print(f" 👤 ID #{track_id} : Suivi via {point_type} à ({norm_x:.3f}, {norm_y:.3f})")
+                # Define hysteresis thresholds
+                right_threshold = self.crossing_line_x + self.buffer
+                left_threshold = self.crossing_line_x - self.buffer
 
-            # 3. Test de collision avec les zones
-            in_door = self._is_inside_zone(point, door_box, width, height, "DOOR")
-            in_inside = self._is_inside_zone(point, inside_box, width, height, "INSIDE")
+                # Step 1: Handle first appearance of an ID
+                if track_id not in self.id_states:
+                    if norm_x > self.crossing_line_x:
+                        self.id_states[track_id] = "RIGHT"
+                    else:
+                        # Late detection safe-check: if they appear very close to the line on the left (e.g. up to 0.37)
+                        # we assume they came from the right but tracking was delayed, and we init them as RIGHT
+                        if norm_x > (self.crossing_line_x - 0.08):
+                            self.id_states[track_id] = "RIGHT"
+                        else:
+                            self.id_states[track_id] = "LEFT"
+                    continue
 
-            current_state = "NONE"
-            if in_door and in_inside:
-                current_state = "BOTH"
-            elif in_door:
-                current_state = "DOOR"
-            elif in_inside:
-                current_state = "INSIDE"
+                # Step 2: Track state changes (crossings)
+                previous_state = self.id_states[track_id]
 
-            if track_id not in self.user_history:
-                self.user_history[track_id] = []
+                # Case 1: Transition from RIGHT to LEFT -> ENTRY
+                if previous_state == "RIGHT" and norm_x < left_threshold:
+                    self.in_count += 1
+                    self.id_states[track_id] = "LEFT"
+                    msg = f"User ID #{track_id} crossed line entering."
+                    print(f"[MATCH ENTRY !] -> {msg}")
+                    self._write_log(f"COUNT: {msg}")
 
-            history = self.user_history[track_id]
+                # Case 2: Transition from LEFT to RIGHT -> EXIT
+                elif previous_state == "LEFT" and norm_x > right_threshold:
+                    self.out_count += 1
+                    self.id_states[track_id] = "RIGHT"
+                    msg = f"User ID #{track_id} crossed line exiting."
+                    print(f"[MATCH EXIT !] -> {msg}")
+                    self._write_log(f"COUNT: {msg}")
 
-            # 4. Suivi du changement d'état
-            if not history or history[-1] != current_state:
-                if current_state != "NONE":
-                    history.append(current_state)
-                    if len(history) > 5:
-                        history.pop(0)
-                print(f"    ↳ Change d'état visuel -> Actuel: '{current_state}' | Historique récent: {history}")
-            else:
-                print(f"    ↳ Reste stable dans l'état: '{current_state}' | Historique récent: {history}")
-
-            # 5. Évaluation de la séquence
-            self._evaluate_state_sequence(track_id, history)
-
-        # CLEANUP LOGIC WITH MEMORY BUFFER
-        # For every ID currently active in this frame, reset its absence counter
-        for uid in current_active_ids:
-            self.absence_frames[uid] = 0
-
-        # Check all stored IDs in our history
-        all_stored_ids = list(self.user_history.keys())
+        # CLEANUP
+        # Clean up IDs that are no longer tracked to free memory
+        all_stored_ids = list(self.id_states.keys())
         for uid in all_stored_ids:
             if uid not in current_active_ids:
-                # Increment the absence frame counter for this missing ID
-                self.absence_frames[uid] = self.absence_frames.get(uid, 0) + 1
-
-                # If the ID has been missing for more than 30 frames (~1.5 seconds), delete it
-                if self.absence_frames[uid] > 30:
-                    print(f" 🗑️ ID #{uid} missing for too long. Permanently deleting history.")
-                    del self.user_history[uid]
-                    if uid in self.absence_frames:
-                        del self.absence_frames[uid]
-                    # NEW: Clean up the cooldown dictionary to prevent memory leaks
-                    if uid in self.cooldown_counters:
-                        del self.cooldown_counters[uid]
+                del self.id_states[uid]
 
         return self.in_count, self.out_count
 
@@ -180,7 +164,7 @@ class FlowCounter:
             self.in_count += 1
             self.cooldown_counters[track_id] = current_frame
             msg = f"User ID #{track_id} Entered."
-            print(f"🚀 [MATCH ENTRÉE !!!] -> {msg}")
+            print(f"[MATCH ENTRY !] -> {msg}")
             self._write_log(f"COUNT: {msg}")
             history.clear()
 
@@ -189,6 +173,6 @@ class FlowCounter:
             self.out_count += 1
             self.cooldown_counters[track_id] = current_frame
             msg = f"User ID #{track_id} Exited."
-            print(f"🛑 [MATCH SORTIE !!!] -> {msg}")
+            print(f"[MATCH EXIT !] -> {msg}")
             self._write_log(f"COUNT: {msg}")
             history.clear()

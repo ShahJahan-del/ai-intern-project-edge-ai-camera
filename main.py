@@ -1,14 +1,17 @@
 import cv2
 import numpy as np
-from config.settings import ZONE_DOOR, ZONE_INSIDE, MODEL_WIDTH, MODEL_HEIGHT
+import time
+#from config.settings import ZONE_DOOR, ZONE_INSIDE, MODEL_WIDTH, MODEL_HEIGHT
+from config.settings import CROSSING_LINE, MODEL_WIDTH, MODEL_HEIGHT
 from core.capture import RTSPStreamReader
 from core.detector import PoseDetector
 from core.tracker import ObjectTracker
 from core.counter import FlowCounter
 from core.calibration import AutoCalibrator
 
+"""
 def draw_debug_polygons(frame, door_poly, inside_poly, in_count, out_count):
-    """Draws custom perspective-aligned polygons and counters on screen."""
+    Draws custom perspective-aligned polygons and counters on screen.
     overlay = frame.copy()
 
     # Draw transparent polygons
@@ -30,6 +33,21 @@ def draw_debug_polygons(frame, door_poly, inside_poly, in_count, out_count):
     cv2.rectangle(frame, (10, 10), (280, 80), (0, 0, 0), -1)
     cv2.putText(frame, f"INCOMING : {in_count}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
     cv2.putText(frame, f"OUTGOING : {out_count}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+"""
+
+def draw_debug_line(frame, active_line, in_count, out_count):
+    """Draws the auto-calibrated crossing line and counters on screen."""
+    if active_line is not None and len(active_line) >= 2:
+        pt1 = tuple(active_line[0])
+        pt2 = tuple(active_line[1])
+        # Draw the virtual line (Red, thickness=3)
+        cv2.line(frame, pt1, pt2, (0, 0, 255), 3)
+        cv2.putText(frame, "CROSSING LINE", (pt1[0] - 50, pt1[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+
+    # Global HUD
+    cv2.rectangle(frame, (10, 10), (280, 80), (0, 0, 0), -1)
+    cv2.putText(frame, f"INCOMING : {in_count}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+    cv2.putText(frame, f"OUTGOING : {out_count}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
 def main():
     print("[*] Initializing Edge AI Camera Processing Pipeline...")
@@ -41,12 +59,14 @@ def main():
     counter = FlowCounter()
     calibrator = AutoCalibrator()
 
-    # Placeholders for calibrated pixel-space polygons
-    active_door_poly = None
-    active_inside_poly = None
+    # Placeholder for calibrated pixel-space crossing line
+    active_line = None
 
     # Persistent container to prevent UI flickering during frame skips
     annotated_frame = None
+
+    # Target frame interval (e.g., 1 / 30 FPS = ~0.033 seconds) to control video playback speed
+    frame_interval = 1.0 / 30.0
 
     print("[+] System online. Waiting for first valid frame...")
     print("[+] Core system successfully initialized. Starting processing loop...")
@@ -55,6 +75,9 @@ def main():
     try:
         cv2.namedWindow("Edge AI Portal - Auto-Calibrated Debugger", cv2.WINDOW_AUTOSIZE)
         while reader.started:
+
+            start_time = time.time()
+
             # Read frame from the threaded buffer
             should_process, frame = reader.read()
 
@@ -64,22 +87,13 @@ def main():
             # Retrieve dimensions (expected to match MODEL_WIDTH/MODEL_HEIGHT)
             height, width, _ = frame.shape
 
-            # One-time startup auto-calibration (aligns zones if camera moved)
-            if active_door_poly is None:
+            # One-time startup auto-calibration (aligns crossing line if camera moved)
+            if active_line is None:
                 print("[*] Performing startup automatic zone alignment...")
-                active_door_poly, active_inside_poly = calibrator.align_zones(
-                    frame, ZONE_DOOR, ZONE_INSIDE, width, height
+                active_line = calibrator.align_line(
+                    frame, CROSSING_LINE, width, height
                 )
-                print("[+] Calibration complete! Polygonal zones mapped successfully.")
-
-            # Replaces the calibration above (if you want to deactivate calibration)
-            # Instead of using calibrator.align_zones, convert directly
-            # Normalized coordinates of settings.py with real pixels
-            #if active_door_poly is None:
-            #    print("[*] Using robust static polygonal zones...")
-            #    active_door_poly = np.array([[int(p[0] * width), int(p[1] * height)] for p in ZONE_DOOR], dtype=np.int32)
-            #    active_inside_poly = np.array([[int(p[0] * width), int(p[1] * height)] for p in ZONE_INSIDE], dtype=np.int32)
-            #    print("[+] Static zones initialized successfully.")
+                print("[+] Calibration complete! Crossing line mapped successfully.")
 
             # 2. Run inference and tracking only on selected frames (frame skipping)
             if should_process:
@@ -87,7 +101,7 @@ def main():
                 tracking_results = tracker.track_frame(frame)
 
                 in_count, out_count = counter.update(
-                    tracking_results, width, height, active_door_poly, active_inside_poly
+                    tracking_results, width, height, active_line
                 )
 
                 # Generate the overlay containing skeletons and boxes
@@ -104,14 +118,18 @@ def main():
                 # to prevent time lag while maintaining visible skeletons
                 annotated_frame = frame.copy()
 
-            # 3. Draw diagnostic elements (zones overlay + counters HUD) on the annotated display layer
-            draw_debug_polygons(annotated_frame, active_door_poly, active_inside_poly, counter.in_count, counter.out_count)
+            # 3. Draw crossing line
+            draw_debug_line(annotated_frame, active_line, counter.in_count, counter.out_count)
 
             # 4. Render window frame
             cv2.imshow("Edge AI Portal - Auto-Calibrated Debugger", annotated_frame)
 
-            # Check for close/exit key
-            if cv2.waitKey(1) & 0xFF == ord('q'):
+            # Calculate actual processing time and wait for the remaining frame interval
+            elapsed = time.time() - start_time
+            sleep_time = max(1, int((frame_interval - elapsed) * 1000))
+
+            # Check for close/exit key with dynamically calculated sleep time
+            if cv2.waitKey(sleep_time) & 0xFF == ord('q'):
                 print("[*] Exit signal received. Shutting down system...")
                 break
 
