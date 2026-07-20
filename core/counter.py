@@ -107,24 +107,21 @@ class FlowCounter:
 
                 # Step 1: Handle first appearance of an ID
                 if track_id not in self.id_states:
-                    if norm_x > self.crossing_line_x:
-                        self.id_states[track_id] = "RIGHT"
-                    else:
-                        # Late detection safe-check: if they appear very close to the line on the left (e.g. up to 0.37)
-                        # we assume they came from the right but tracking was delayed, and we init them as RIGHT
-                        if norm_x > (self.crossing_line_x - 0.08):
-                            self.id_states[track_id] = "RIGHT"
-                        else:
-                            self.id_states[track_id] = "LEFT"
+                    # Store a dictionary with state and a last_seen counter for grace period cleanup
+                    self.id_states[track_id] = {
+                        "state": "RIGHT" if norm_x > self.crossing_line_x else "LEFT",
+                        "last_seen": 0
+                    }
                     continue
 
                 # Step 2: Track state changes (crossings)
-                previous_state = self.id_states[track_id]
+                self.id_states[track_id]["last_seen"] = 0
+                previous_state = self.id_states[track_id]["state"]
 
                 # Case 1: Transition from RIGHT to LEFT -> ENTRY
                 if previous_state == "RIGHT" and norm_x < left_threshold:
                     self.in_count += 1
-                    self.id_states[track_id] = "LEFT"
+                    self.id_states[track_id]["state"] = "LEFT"
                     msg = f"User ID #{track_id} crossed line entering."
                     print(f"[MATCH ENTRY !] -> {msg}")
                     self._write_log(f"COUNT: {msg}")
@@ -132,17 +129,21 @@ class FlowCounter:
                 # Case 2: Transition from LEFT to RIGHT -> EXIT
                 elif previous_state == "LEFT" and norm_x > right_threshold:
                     self.out_count += 1
-                    self.id_states[track_id] = "RIGHT"
+                    self.id_states[track_id]["state"] = "RIGHT"
                     msg = f"User ID #{track_id} crossed line exiting."
                     print(f"[MATCH EXIT !] -> {msg}")
                     self._write_log(f"COUNT: {msg}")
 
-        # CLEANUP
-        # Clean up IDs that are no longer tracked to free memory
-        all_stored_ids = list(self.id_states.keys())
-        for uid in all_stored_ids:
+        # CLEANUP: Retention buffer (grace period of ~45 missed frames)
+        expired_ids = []
+        for uid, data in self.id_states.items():
             if uid not in current_active_ids:
-                del self.id_states[uid]
+                data["last_seen"] += 1
+                if data["last_seen"] > 45:  # Retain ID memory for ~1.5 seconds
+                    expired_ids.append(uid)
+
+        for uid in expired_ids:
+            del self.id_states[uid]
 
         return self.in_count, self.out_count
 

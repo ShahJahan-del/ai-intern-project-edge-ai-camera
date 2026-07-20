@@ -22,7 +22,7 @@ class PoseDetector:
             self.model.export(format="openvino", half=True)
 
         # Reload the optimized model
-        self.model = YOLO(openvino_model_path, task="pose")
+        self.model = YOLO(openvino_model_path)
         print("[+] Model loaded successfully on optimized CPU runtime.")
 
     def detect(self, frame):

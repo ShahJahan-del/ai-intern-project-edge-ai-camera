@@ -95,27 +95,18 @@ def main():
                 )
                 print("[+] Calibration complete! Crossing line mapped successfully.")
 
-            # 2. Run inference and tracking only on selected frames (frame skipping)
-            if should_process:
-                # Track the frame. This automatically executes YOLOv8-Pose with ByteTrack
-                tracking_results = tracker.track_frame(frame)
+            # 2. Run single-pass inference and tracking
+            # Execute tracking continuously on available frames to preserve ByteTrack IDs
+            tracking_results = tracker.track_frame(frame)
 
-                in_count, out_count = counter.update(
-                    tracking_results, width, height, active_line
-                )
+            in_count, out_count = counter.update(
+                tracking_results, width, height, active_line
+            )
 
-                # Generate the overlay containing skeletons and boxes
-                if tracking_results is not None and tracking_results.boxes is not None:
-                    annotated_frame = tracking_results.plot(boxes=True, kpt_line=True, labels=True)
-                else:
-                    annotated_frame = frame.copy()
-
-            # If we skip AI inference, fallback to the raw frame to maintain fluid stream motion
-            elif annotated_frame is None:
-                annotated_frame = frame.copy()
+            # Generate the overlay containing skeletons and boxes
+            if tracking_results is not None and tracking_results.boxes is not None:
+                annotated_frame = tracking_results.plot(boxes=True, labels=True)
             else:
-                # We reuse the previous frame's visual annotations but update the background matrix pixels
-                # to prevent time lag while maintaining visible skeletons
                 annotated_frame = frame.copy()
 
             # 3. Draw crossing line

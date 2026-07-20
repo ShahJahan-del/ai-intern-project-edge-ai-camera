@@ -18,6 +18,9 @@ class ObjectTracker:
             persist=True,
             tracker="bytetrack.yaml",
             conf=CONFIDENCE_THRESHOLD,
+            classes=[0],
             verbose=False
         )
-        return results[0] if results else None
+        if isinstance(results, list):
+            return results[0] if len(results) > 0 else None
+        return results
