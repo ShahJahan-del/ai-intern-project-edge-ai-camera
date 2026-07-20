@@ -17,6 +17,7 @@ class RTSPStreamReader:
         self.started = False
         self.read_lock = threading.Lock()
         self.frame_counter = 0
+        self.was_looped = False
 
     def start(self):
         if self.started:
@@ -34,6 +35,8 @@ class RTSPStreamReader:
                 # Loop video if it is a local test file, otherwise stop
                 if isinstance(VIDEO_SOURCE, str) and not VIDEO_SOURCE.startswith("rtsp://"):
                     self.stream.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    with self.read_lock:
+                        self.was_looped = True
                     continue
                 else:
                     self.started = False
@@ -53,11 +56,14 @@ class RTSPStreamReader:
             frame_to_return = self.frame.copy() if self.frame is not None else None
             should_process = (self.frame_counter % FRAME_SKIP == 0)
 
+            looped = self.was_looped
+            self.was_looped = False
+
         # Downsample resolution early to save CPU on transfer and processing
         if frame_to_return is not None:
             frame_to_return = cv2.resize(frame_to_return, (MODEL_WIDTH, MODEL_HEIGHT))
 
-        return should_process, frame_to_return
+        return should_process, frame_to_return, looped
 
     def stop(self):
         self.started = False

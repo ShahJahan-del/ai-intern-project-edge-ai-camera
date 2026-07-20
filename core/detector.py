@@ -5,7 +5,7 @@ from config.settings import MODEL_NAME, CONFIDENCE_THRESHOLD
 class PoseDetector:
     """
     Handles loading, exporting (to OpenVINO format), and executing
-    YOLOv8-Pose model to retrieve human keypoints.
+    YOLOv8 model for object detection.
     """
     def __init__(self):
         print(f"[+] Loading core AI model: {MODEL_NAME}...")
@@ -29,6 +29,5 @@ class PoseDetector:
         """
         Runs inference on a single frame. Returns predictions.
         """
-        # Inference with specific threshold and disabled verbose prints for cleaner logs
         results = self.model(frame, conf=CONFIDENCE_THRESHOLD, verbose=False)
         return results[0] if results else None

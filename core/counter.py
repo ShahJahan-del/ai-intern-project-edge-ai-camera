@@ -12,16 +12,31 @@ class FlowCounter:
     def __init__(self):
         self.in_count = 0
         self.out_count = 0
-        # Track the logical side of each active ID. Format: { id: "LEFT" or "RIGHT" }
-        self.id_states = {}
-        # The X coordinate defining our virtual crossing line (midpoint)
+        self.frame_count = 0
         self.crossing_line_x = 0.45
 
-        # Reduced safety margin (approx. 1% of screen width) to accept late-acquired IDs
-        self.buffer = 0.01  # 1% of image width
+        # Hysteresis buffer: 3% threshold around line to prevent line-flicker
+        self.buffer = 0.03
+
+        # Stores master chain states:
+        # { chain_id: {"origin_side": str, "last_x": float, "last_frame": int, "counted": bool} }
+        self.chains_db = {}
+
+        # Maps current live track_id -> chain_id
+        self.track_to_chain = {}
+
+        self.next_chain_id = 1
 
         # Ensure the logs directory exists
         os.makedirs(os.path.dirname(LOG_FILE_PATH), exist_ok=True)
+
+    def reset(self):
+        """Resets state memory when video loops."""
+        self.chains_db.clear()
+        self.track_to_chain.clear()
+        self.frame_count = 0
+        self.next_chain_id = 1
+        print("[INFO] Counter state cleared for video loop.")
 
     def _get_tracking_point(self, keypoints):
         """Extracts stable tracking point from hips or falls back to bbox center."""
@@ -72,6 +87,7 @@ class FlowCounter:
             print(f"[!] Failed to write log: {e}")
 
     def update(self, tracking_results, width, height, active_line):
+        self.frame_count += 1
         current_active_ids = set()
 
         # Dynamically calculate the crossing boundary X coordinate based on the aligned line
@@ -80,13 +96,11 @@ class FlowCounter:
         else:
             self.crossing_line_x = 0.45 # Fallback midpoint if calibration not ready
 
-        # Check if tracking_results is a list (typical of Ultralytics batch inference)
-        # and grab the first element if so.
+        # Check if tracking_results is a list and grab the first element if so.
         results = tracking_results[0] if isinstance(tracking_results, list) else tracking_results
 
         # Ensure boxes and IDs exist in the frame results
         if results is not None and results.boxes is not None and results.boxes.id is not None:
-            # Extract tracking IDs, normalized bounding boxes (xyxyn)
             track_ids = results.boxes.id.int().cpu().tolist()
             boxes_norm = results.boxes.xyxyn.cpu().numpy()
 
@@ -95,55 +109,111 @@ class FlowCounter:
 
                 # Extract normalized x coordinates (center of bounding box)
                 bbox = boxes_norm[i]
-                x1, y1, x2, y2 = bbox[0], bbox[1], bbox[2], bbox[3]
-                norm_x = float((x1 + x2) / 2.0)
-
-                # DEBUG: Uncomment to see the exact positions of IDs in real-time
-                print(f"[DEBUG ID #{track_id}] X Position: {norm_x:.3f} | Target Line: {self.crossing_line_x:.3f}")
+                norm_x = float((bbox[0] + bbox[2]) / 2.0)
 
                 # Define hysteresis thresholds
                 right_threshold = self.crossing_line_x + self.buffer
                 left_threshold = self.crossing_line_x - self.buffer
 
-                # Step 1: Handle first appearance of an ID
-                if track_id not in self.id_states:
-                    # Store a dictionary with state and a last_seen counter for grace period cleanup
-                    self.id_states[track_id] = {
-                        "state": "RIGHT" if norm_x > self.crossing_line_x else "LEFT",
-                        "last_seen": 0
-                    }
-                    continue
+                # DEBUG: X coordinate of
+                print(f"ID #{track_id} located at x = {norm_x:.3f} | Crossing Line located at x = {self.crossing_line_x:.3f}")
 
-                # Step 2: Track state changes (crossings)
-                self.id_states[track_id]["last_seen"] = 0
-                previous_state = self.id_states[track_id]["state"]
+                # Step 1: Resolve Chain ID for this Track ID
+                if track_id not in self.track_to_chain:
+                    matched_chain_id = None
 
-                # Case 1: Transition from RIGHT to LEFT -> ENTRY
-                if previous_state == "RIGHT" and norm_x < left_threshold:
-                    self.in_count += 1
-                    self.id_states[track_id]["state"] = "LEFT"
-                    msg = f"User ID #{track_id} crossed line entering."
-                    print(f"[MATCH ENTRY !] -> {msg}")
-                    self._write_log(f"COUNT: {msg}")
+                    # Search for recent lost chains close in spatial position (< 5% screen distance, lost within 15 frames)
+                    for c_id, c_data in self.chains_db.items():
+                        frames_since_last = self.frame_count - c_data["last_frame"]
+                        if 1 <= frames_since_last <= 15:
+                            spatial_dist = abs(norm_x - c_data["last_x"])
+                            if spatial_dist < 0.05:  # Strict 5% width limit
+                                matched_chain_id = c_id
+                                break
 
-                # Case 2: Transition from LEFT to RIGHT -> EXIT
-                elif previous_state == "LEFT" and norm_x > right_threshold:
-                    self.out_count += 1
-                    self.id_states[track_id]["state"] = "RIGHT"
-                    msg = f"User ID #{track_id} crossed line exiting."
-                    print(f"[MATCH EXIT !] -> {msg}")
-                    self._write_log(f"COUNT: {msg}")
+                    if matched_chain_id is not None:
+                        # Re-link existing chain (preserves 'counted' state!)
+                        self.track_to_chain[track_id] = matched_chain_id
+                        chain_id = matched_chain_id
+                        print(f"[CHAIN LINK] Track #{track_id} -> Linked to Chain #{chain_id} (Origin: {self.chains_db[chain_id]['origin_side']})")
+                    else:
+                        # Create a brand new chain
+                        chain_id = self.next_chain_id
+                        self.next_chain_id += 1
+                        origin_side = "RIGHT" if norm_x > self.crossing_line_x else "LEFT"
 
-        # CLEANUP: Retention buffer (grace period of ~45 missed frames)
-        expired_ids = []
-        for uid, data in self.id_states.items():
-            if uid not in current_active_ids:
-                data["last_seen"] += 1
-                if data["last_seen"] > 45:  # Retain ID memory for ~1.5 seconds
-                    expired_ids.append(uid)
+                        self.chains_db[chain_id] = {
+                            "origin_side": origin_side,
+                            "last_x": norm_x,
+                            "last_frame": self.frame_count,
+                            "counted": False
+                        }
+                        self.track_to_chain[track_id] = chain_id
+                        print(f"[NEW CHAIN] Chain #{chain_id} created for Track #{track_id} at norm_X={norm_x:.3f} (Origin: {origin_side})")
+                else:
+                    chain_id = self.track_to_chain[track_id]
 
-        for uid in expired_ids:
-            del self.id_states[uid]
+                # Step 2: Update Chain position and check crossing
+                chain = self.chains_db[chain_id]
+                chain["last_x"] = norm_x
+                chain["last_frame"] = self.frame_count
+
+                # Evaluate crossing ONLY IF the chain has not been counted yet
+                if not chain["counted"]:
+                    origin = chain["origin_side"]
+
+                    # ENTRY: Came from RIGHT, now clearly on LEFT
+                    if origin == "RIGHT" and norm_x < (self.crossing_line_x - self.buffer):
+                        self.in_count += 1
+                        chain["counted"] = True  # Permanently mark chain as counted!
+                        msg = f"Chain #{chain_id} (Track #{track_id}) completed ENTRY path."
+                        print(f"[MATCH ENTRY !] -> {msg} (norm_X={norm_x:.3f}, Line X={self.crossing_line_x:.3f})")
+                        self._write_log(f"COUNT: {msg}")
+
+                    # EXIT: Came from LEFT, now clearly on RIGHT
+                    elif origin == "LEFT" and norm_x > (self.crossing_line_x + self.buffer):
+                        self.out_count += 1
+                        chain["counted"] = True  # Permanently mark chain as counted!
+                        msg = f"Chain #{chain_id} (Track #{track_id}) completed EXIT path."
+                        print(f"[MATCH EXIT !] -> {msg} (norm_X={norm_x:.3f}, Line X={self.crossing_line_x:.3f})")
+                        self._write_log(f"COUNT: {msg}")
+
+        # Clean track mappings no longer visible
+        dead_tracks = [tid for tid in self.track_to_chain.keys() if tid not in current_active_ids]
+        for tid in dead_tracks:
+            del self.track_to_chain[tid]
+
+        # Step 3: Cleanup & Ghost Crossing Evaluation
+        dead_chains = []
+        for cid, cdata in self.chains_db.items():
+            time_lost = self.frame_count - cdata["last_frame"]
+
+            # Si la chaîne vient de disparaître (entre 1 et 10 frames) et n'a PAS encore été comptée :
+            if 1 <= time_lost <= 10 and not cdata["counted"]:
+                last_x = cdata["last_x"]
+                origin = cdata["origin_side"]
+
+                # Si l'objet s'est arrêté TRES près de la ligne (ex: à moins de 0.04 de la ligne)
+                if abs(last_x - self.crossing_line_x) < 0.04:
+                    if origin == "RIGHT" and last_x < self.crossing_line_x + 0.03:
+                        self.in_count += 1
+                        cdata["counted"] = True
+                        msg = f"Chain #{cid} (GHOST EXIT) cross validated near line at norm_X={last_x:.3f}."
+                        print(f"[MATCH ENTRY (GHOST) !] -> {msg}")
+                        self._write_log(f"COUNT: {msg}")
+
+                    elif origin == "LEFT" and last_x > self.crossing_line_x - 0.03:
+                        self.out_count += 1
+                        cdata["counted"] = True
+                        msg = f"Chain #{cid} (GHOST ENTRY) cross validated near line at norm_X={last_x:.3f}."
+                        print(f"[MATCH EXIT (GHOST) !] -> {msg}")
+                        self._write_log(f"COUNT: {msg}")
+
+            if time_lost > 30:
+                dead_chains.append(cid)
+
+        for cid in dead_chains:
+            del self.chains_db[cid]
 
         return self.in_count, self.out_count
 

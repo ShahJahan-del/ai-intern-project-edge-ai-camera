@@ -1,0 +1,8 @@
+# English comment: Relaxed ByteTrack parameters for smooth, persistent tracking
+tracker_type: bytetrack
+track_high_thresh: 0.25      # Lower threshold to keep tracking weak detections
+track_low_thresh: 0.05
+new_track_thresh: 0.25       # Lower threshold to pick up missed bounding boxes quickly
+track_buffer: 60             # Keep lost tracks alive for 60 frames (~2 seconds)
+match_thresh: 0.5           # Flexible IoU match threshold to avoid frequent ID resetting
+fuse_score: True

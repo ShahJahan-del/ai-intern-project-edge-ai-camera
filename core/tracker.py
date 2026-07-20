@@ -16,7 +16,8 @@ class ObjectTracker:
         results = self.model.track(
             frame,
             persist=True,
-            tracker="bytetrack.yaml",
+            #tracker="bytetrack.yaml",
+            tracker="config/custom_bytetrack.yaml",
             conf=CONFIDENCE_THRESHOLD,
             classes=[0],
             verbose=False

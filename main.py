@@ -78,11 +78,15 @@ def main():
 
             start_time = time.time()
 
-            # Read frame from the threaded buffer
-            should_process, frame = reader.read()
+            # Read frame and check for video loop
+            should_process, frame, looped = reader.read()
 
             if frame is None:
                 continue
+
+            # Reset tracking memory if test video loops back to frame 0
+            if looped:
+                counter.reset()
 
             # Retrieve dimensions (expected to match MODEL_WIDTH/MODEL_HEIGHT)
             height, width, _ = frame.shape
@@ -103,11 +107,34 @@ def main():
                 tracking_results, width, height, active_line
             )
 
-            # Generate the overlay containing skeletons and boxes
+            # Generate overlay containing boxes
             if tracking_results is not None and tracking_results.boxes is not None:
                 annotated_frame = tracking_results.plot(boxes=True, labels=True)
             else:
-                annotated_frame = frame.copy()
+                annotated_frame = frame
+            # Draw center point and X-position debug visualizer
+            if tracking_results is not None and tracking_results.boxes is not None and tracking_results.boxes.id is not None:
+                boxes = tracking_results.boxes.xyxy.cpu().numpy()
+                track_ids = tracking_results.boxes.id.int().cpu().tolist()
+
+                for i, track_id in enumerate(track_ids):
+                    x1, y1, x2, y2 = boxes[i]
+                    cx, cy = int((x1 + x2) / 2.0), int((y1 + y2) / 2.0)
+                    norm_x = cx / width
+
+                    # Draw center tracking keypoint
+                    cv2.circle(annotated_frame, (cx, cy), 4, (0, 255, 255), -1)
+
+                    # Display ID and current X position on top of the bounding box
+                    cv2.putText(
+                        annotated_frame,
+                        f"ID #{track_id} (X:{cx}px | {norm_x:.2f})",
+                        (int(x1), int(y1) - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.45,
+                        (0, 255, 255),
+                        1
+                    )
 
             # 3. Draw crossing line
             draw_debug_line(annotated_frame, active_line, counter.in_count, counter.out_count)
