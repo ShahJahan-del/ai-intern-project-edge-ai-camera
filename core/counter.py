@@ -188,24 +188,24 @@ class FlowCounter:
         for cid, cdata in self.chains_db.items():
             time_lost = self.frame_count - cdata["last_frame"]
 
-            # Si la chaîne vient de disparaître (entre 1 et 10 frames) et n'a PAS encore été comptée :
+            # If the chain has disappeared (between 1 and 10 frames) and has not yet been counted :
             if 1 <= time_lost <= 10 and not cdata["counted"]:
                 last_x = cdata["last_x"]
                 origin = cdata["origin_side"]
 
-                # Si l'objet s'est arrêté TRES près de la ligne (ex: à moins de 0.04 de la ligne)
+                # If the person disappeared very close to the line (ex: lower than 0.04 from the line)
                 if abs(last_x - self.crossing_line_x) < 0.04:
                     if origin == "RIGHT" and last_x < self.crossing_line_x + 0.03:
                         self.in_count += 1
                         cdata["counted"] = True
-                        msg = f"Chain #{cid} (GHOST EXIT) cross validated near line at norm_X={last_x:.3f}."
+                        msg = f"Chain #{cid} (GHOST ENTRY) cross validated near line at norm_X={last_x:.3f}."
                         print(f"[MATCH ENTRY (GHOST) !] -> {msg}")
                         self._write_log(f"COUNT: {msg}")
 
                     elif origin == "LEFT" and last_x > self.crossing_line_x - 0.03:
                         self.out_count += 1
                         cdata["counted"] = True
-                        msg = f"Chain #{cid} (GHOST ENTRY) cross validated near line at norm_X={last_x:.3f}."
+                        msg = f"Chain #{cid} (GHOST EXIT) cross validated near line at norm_X={last_x:.3f}."
                         print(f"[MATCH EXIT (GHOST) !] -> {msg}")
                         self._write_log(f"COUNT: {msg}")
 

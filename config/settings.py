@@ -20,7 +20,7 @@ MODEL_HEIGHT = 640         # Native YOLOv8 height resolution
 #################### AI CONFIGURATION (YOLOv8 & OpenVINO) ####################
 
 MODEL_NAME = "models/yolov8n.pt"  # Will be auto-downloaded and exported to OpenVINO
-CONFIDENCE_THRESHOLD = 0.15      # Minimum confidence score to detect a person
+CONFIDENCE_THRESHOLD = 0.50      # Minimum confidence score to detect a person
 
 
 
