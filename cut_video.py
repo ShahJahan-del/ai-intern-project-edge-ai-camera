@@ -2,15 +2,15 @@ import cv2
 import os
 
 # Define file paths
-input_video_path = "data/test_video.mp4" # Put the exact name of your 9h video here
+input_video_path = "data/test_video_5min_compressed.mp4" # Put the exact name of your 9h video here
 output_dir = "data"
-output_video_path = os.path.join(output_dir, "test_video_30min.mp4")
+output_video_path = os.path.join(output_dir, "test_video_roboflow.mp4")
 
 # Define target slice (Example: starting at 1 hour 15 minutes, lasting 30 minutes)
-start_hour = 5
-start_minute = 30
+start_hour = 0
+start_minute = 1
 start_second = 0
-duration_minutes = 30
+duration_minutes = 4
 
 # Calculate target frame boundaries based on timestamps
 start_time_seconds = (start_hour * 3600) + (start_minute * 60) + start_second

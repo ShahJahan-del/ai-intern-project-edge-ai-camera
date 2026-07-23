@@ -1,0 +1,24 @@
+description: Ultralytics YOLO26n model trained on /content/ai-intern-camera-detection-2/data.yaml
+author: Ultralytics
+date: '2026-07-23T11:06:24.057526'
+version: 8.4.104
+license: AGPL-3.0 License (https://ultralytics.com/license)
+docs: https://docs.ultralytics.com
+stride: 32
+task: detect
+head: Detect
+batch: 1
+imgsz:
+- 640
+- 640
+names:
+  0: person
+args:
+  data: null
+  batch: 1
+  fraction: 1.0
+  quantize: null
+  dynamic: false
+  nms: false
+channels: 3
+end2end: true

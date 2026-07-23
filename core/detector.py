@@ -10,6 +10,7 @@ class PoseDetector:
     def __init__(self):
         print(f"[+] Loading core AI model: {MODEL_NAME}...")
 
+        """
         # Load standard PyTorch model first
         self.model = YOLO(MODEL_NAME)
 
@@ -23,6 +24,18 @@ class PoseDetector:
 
         # Reload the optimized model
         self.model = YOLO(openvino_model_path)
+        """
+
+        # Check model folder exists
+        if not os.path.exists(MODEL_NAME):
+            raise FileNotFoundError(
+                f"[!] Error: Model path '{MODEL_NAME}' not found. "
+                "Ensure your OpenVINO folder is placed inside the 'models/' directory."
+            )
+
+        # Load folder downloaded from Colab
+        self.model = YOLO(MODEL_NAME, task="detect")
+
         print("[+] Model loaded successfully on optimized CPU runtime.")
 
     def detect(self, frame):
