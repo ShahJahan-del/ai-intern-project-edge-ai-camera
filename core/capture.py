@@ -29,6 +29,10 @@ class RTSPStreamReader:
         return self
 
     def _update(self):
+        # Retrieve original video FPS to pace local file playback smoothly
+        fps = self.stream.get(cv2.CAP_PROP_FPS)
+        frame_delay = (1.0 / fps) if fps > 0 else 0.033
+
         while self.started:
             grabbed, frame = self.stream.read()
             if not grabbed:
@@ -46,6 +50,10 @@ class RTSPStreamReader:
                 self.grabbed = grabbed
                 self.frame = frame
                 self.frame_counter += 1
+
+            # Pacing control: sleep if reading a local video file to prevent frame skipping
+            if isinstance(VIDEO_SOURCE, str) and not VIDEO_SOURCE.startswith("rtsp://"):
+                time.sleep(frame_delay)
 
     def read(self):
         """

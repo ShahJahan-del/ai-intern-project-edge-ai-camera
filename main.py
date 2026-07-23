@@ -81,7 +81,7 @@ def main():
             # Read frame and check for video loop
             should_process, frame, looped = reader.read()
 
-            if frame is None:
+            if frame is None or not should_process:
                 continue
 
             # Reset tracking memory if test video loops back to frame 0
