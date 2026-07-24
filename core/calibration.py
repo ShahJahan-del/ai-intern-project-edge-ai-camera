@@ -82,10 +82,13 @@ class AutoCalibrator:
         Calculates homography matrix and transforms the normalized crossing line
         to match the current frame's perspective.
         """
+        # Default fallback line in pixel coordinates
+        default_line = self._denormalize(crossing_line, width, height)
+
         # If no reference image exists yet, initialize it and return original line
         if self.ref_img_gray is None:
             self.save_reference(current_frame)
-            return self._denormalize(crossing_line, width, height)
+            return default_line
 
         # Process current frame
         current_gray = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
@@ -93,7 +96,7 @@ class AutoCalibrator:
 
         if curr_des is None or len(curr_kp) < 10:
             print("[!] Warning: Not enough features detected. Using fallback coordinates.")
-            return self._denormalize(crossing_line, width, height)
+            return default_line
 
         # Match keypoints
         matches = self.bf.match(self.ref_descriptors, curr_des)
@@ -102,7 +105,7 @@ class AutoCalibrator:
         # We need at least 15 solid matches to compute a reliable Homography matrix
         if len(matches) < 15:
             print("[!] Warning: Camera shift too severe or scene too dark. Fallback active.")
-            return self._denormalize(crossing_line, width, height)
+            return default_line
 
         # Extract coordinates of matching points
         src_pts = np.float32([self.ref_keypoints[m.queryIdx].pt for m in matches]).reshape(-1, 1, 2)
@@ -113,10 +116,15 @@ class AutoCalibrator:
 
         if H is None:
             print("[!] Error: Homography calculation failed. Using default coordinates.")
-            return self._denormalize(crossing_line, width, height)
+            return default_line
 
         # Warp normalized crossing line points
         aligned_line = self._warp_polygon(crossing_line, H, width, height)
+
+        # Sanity Check: Ensure the transformed line isn't collapsed into a single point
+        if not self._is_valid_line(aligned_line):
+            print("[!] Warning: Homography produced degenerate line. Reverting to fallback.")
+            return default_line
 
         return aligned_line
 
@@ -137,3 +145,11 @@ class AutoCalibrator:
 
         # Step 4: Cast back to integer coordinates
         return np.array(transformed_points.reshape(-1, 2), dtype=np.int32)
+
+    def _is_valid_line(self, line_pts, min_length_px=50):
+        """Checks if the line segment has a minimum reasonable length in pixels."""
+        if len(line_pts) < 2:
+            return False
+        p1, p2 = line_pts[0], line_pts[1]
+        length = np.sqrt((p2[0] - p1[0])**2 + (p2[1] - p1[1])**2)
+        return length >= min_length_px

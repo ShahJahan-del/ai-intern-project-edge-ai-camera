@@ -20,7 +20,6 @@ class FlowCounter:
 
         # Stores master chain states:
         # { chain_id: {"origin_side": str, "last_x": float, "last_frame": int, "counted": bool} }
-        # { chain_id: {"origin_side": str, "start_x": float, "last_x": float, "last_frame": int, "counted": bool} }
         self.chains_db = {}
 
         # Maps current live track_id -> chain_id
@@ -44,6 +43,34 @@ class FlowCounter:
         self.tracks_memory.clear()
         self.frame_count = 0
         print("[INFO] Counter state cleared for video loop.")
+
+    def _get_tracking_point(self, keypoints):
+        """Extracts stable tracking point from hips or falls back to bbox center."""
+        if keypoints is not None and len(keypoints.xy) > 0:
+            xy = keypoints.xy[0]
+            if len(xy) > 12:
+                left_hip = xy[11]
+                right_hip = xy[12]
+                if left_hip[0] > 0 and right_hip[0] > 0:
+                    x = float((left_hip[0] + right_hip[0]) / 2)
+                    y = float((left_hip[1] + right_hip[1]) / 2)
+                    return x, y
+        return None
+
+    def _is_inside_zone(self, point, zone_bbox, frame_width, frame_height, zone_name=""):
+        """Checks if a point (x, y) lies inside a normalized zone bbox."""
+        if point is None or zone_bbox is None:
+            return False
+        x, y = point
+        norm_x = x / frame_width
+        norm_y = y / frame_height
+
+        ymin, xmin, ymax, xmax = zone_bbox
+        is_in = (xmin <= norm_x <= xmax) and (ymin <= norm_y <= ymax)
+
+        # DEBUG POINT POSITION
+        # print(f"  [DEBUG MATCH {zone_name}] Point: ({norm_x:.2f}, {norm_y:.2f}) vs Zone Bounds: X[{xmin:.2f}-{xmax:.2f}] Y[{ymin:.2f}-{ymax:.2f}] -> Result: {is_in}")
+        return is_in
 
     def _convert_poly_to_bbox(self, poly, width, height):
         """Helper to convert pixel polygons to normalized [ymin, xmin, ymax, xmax]"""
@@ -106,7 +133,7 @@ class FlowCounter:
                         frames_since_last = self.frame_count - c_data["last_frame"]
                         if 1 <= frames_since_last <= 15:
                             spatial_dist = abs(norm_x - c_data["last_x"])
-                            if spatial_dist < 0.1:  # Strict 10% width limit
+                            if spatial_dist < 0.05:  # Strict 5% width limit
                                 matched_chain_id = c_id
                                 break
 
@@ -119,13 +146,10 @@ class FlowCounter:
                         # Create a brand new chain
                         chain_id = self.next_chain_id
                         self.next_chain_id += 1
-
-                        # Assign origin side immediately based on crossing line position
-                        origin_side = "RIGHT" if norm_x >= self.crossing_line_x else "LEFT"
+                        origin_side = "RIGHT" if norm_x > self.crossing_line_x else "LEFT"
 
                         self.chains_db[chain_id] = {
                             "origin_side": origin_side,
-                            "start_x": norm_x,  # Save initial position to verify movement
                             "last_x": norm_x,
                             "last_frame": self.frame_count,
                             "counted": False
@@ -137,38 +161,28 @@ class FlowCounter:
 
                 # Step 2: Update Chain position and check crossing
                 chain = self.chains_db[chain_id]
-                prev_x = chain["last_x"]
                 chain["last_x"] = norm_x
                 chain["last_frame"] = self.frame_count
 
                 # Evaluate crossing ONLY IF the chain has not been counted yet
                 if not chain["counted"]:
-                    # Check relative position shift across the line
-                    prev_rel = prev_x - self.crossing_line_x
-                    curr_rel = norm_x - self.crossing_line_x
+                    origin = chain["origin_side"]
 
-                    # True if the object stepped across the crossing line between frames
-                    line_crossed = (prev_rel * curr_rel) <= 0
-                    total_travel = abs(norm_x - chain["start_x"])
+                    # ENTRY: Came from RIGHT, now clearly on LEFT
+                    if origin == "RIGHT" and norm_x < (self.crossing_line_x - self.buffer):
+                        self.in_count += 1
+                        chain["counted"] = True  # Permanently mark chain as counted!
+                        msg = f"Chain #{chain_id} (Track #{track_id}) completed ENTRY path."
+                        print(f"[MATCH ENTRY !] -> {msg} (norm_X={norm_x:.3f}, Line X={self.crossing_line_x:.3f})")
+                        self._write_log(f"COUNT: {msg}")
 
-                    # Require line crossing AND minimal travel distance (prevents edge jitter)
-                    if line_crossed and total_travel >= 0.02:
-
-                        # ENTRY: Came from RIGHT, now moving LEFT
-                        if chain["origin_side"] == "RIGHT" or prev_rel > 0:
-                            self.in_count += 1
-                            chain["counted"] = True  # Permanently mark chain as counted!
-                            msg = f"Chain #{chain_id} (Track #{track_id}) completed ENTRY path."
-                            print(f"[MATCH ENTRY !] -> {msg} (norm_X={norm_x:.3f}, Line X={self.crossing_line_x:.3f})")
-                            self._write_log(f"COUNT: {msg}")
-
-                        # EXIT: Came from LEFT, now moving RIGHT
-                        elif chain["origin_side"] == "LEFT" or prev_rel < 0:
-                            self.out_count += 1
-                            chain["counted"] = True  # Permanently mark chain as counted!
-                            msg = f"Chain #{chain_id} (Track #{track_id}) completed EXIT path."
-                            print(f"[MATCH EXIT !] -> {msg} (norm_X={norm_x:.3f}, Line X={self.crossing_line_x:.3f})")
-                            self._write_log(f"COUNT: {msg}")
+                    # EXIT: Came from LEFT, now clearly on RIGHT
+                    elif origin == "LEFT" and norm_x > (self.crossing_line_x + self.buffer):
+                        self.out_count += 1
+                        chain["counted"] = True  # Permanently mark chain as counted!
+                        msg = f"Chain #{chain_id} (Track #{track_id}) completed EXIT path."
+                        print(f"[MATCH EXIT !] -> {msg} (norm_X={norm_x:.3f}, Line X={self.crossing_line_x:.3f})")
+                        self._write_log(f"COUNT: {msg}")
 
         # Clean track mappings no longer visible
         dead_tracks = [tid for tid in self.track_to_chain.keys() if tid not in current_active_ids]
@@ -180,28 +194,24 @@ class FlowCounter:
         for cid, cdata in self.chains_db.items():
             time_lost = self.frame_count - cdata["last_frame"]
 
-            # Evaluate ghost crossing if disappeared between 1 and 10 frames
-            if 1 <= time_lost <= 10 and not cdata["counted"] and cdata["origin_side"] != "UNKNOWN":
+            # If the chain has disappeared (between 1 and 10 frames) and has not yet been counted :
+            if 1 <= time_lost <= 10 and not cdata["counted"]:
                 last_x = cdata["last_x"]
-                start_x = cdata["start_x"]
                 origin = cdata["origin_side"]
 
-                # Condition 1: Must disappear within 3% of the line
-                if abs(last_x - self.crossing_line_x) < 0.03:
-
-                    # Condition 2: GHOST ENTRY -> Must have started on RIGHT AND moved clearly towards LEFT
-                    if origin == "RIGHT" and (start_x - last_x) > 0.04 and last_x < self.crossing_line_x:
+                # If the person disappeared very close to the line (ex: lower than 0.04 from the line)
+                if abs(last_x - self.crossing_line_x) < 0.04:
+                    if origin == "RIGHT" and last_x < self.crossing_line_x + 0.03:
                         self.in_count += 1
                         cdata["counted"] = True
-                        msg = f"Chain #{cid} (GHOST ENTRY) verified near line at norm_X={last_x:.3f}."
+                        msg = f"Chain #{cid} (GHOST ENTRY) cross validated near line at norm_X={last_x:.3f}."
                         print(f"[MATCH ENTRY (GHOST) !] -> {msg}")
                         self._write_log(f"COUNT: {msg}")
 
-                    # Condition 2: GHOST EXIT -> Must have started on LEFT AND moved clearly towards RIGHT
-                    elif origin == "LEFT" and (last_x - start_x) > 0.04 and last_x > self.crossing_line_x:
+                    elif origin == "LEFT" and last_x > self.crossing_line_x - 0.03:
                         self.out_count += 1
                         cdata["counted"] = True
-                        msg = f"Chain #{cid} (GHOST EXIT) verified near line at norm_X={last_x:.3f}."
+                        msg = f"Chain #{cid} (GHOST EXIT) cross validated near line at norm_X={last_x:.3f}."
                         print(f"[MATCH EXIT (GHOST) !] -> {msg}")
                         self._write_log(f"COUNT: {msg}")
 
@@ -212,3 +222,34 @@ class FlowCounter:
             del self.chains_db[cid]
 
         return self.in_count, self.out_count
+
+    def _evaluate_state_sequence(self, track_id, history):
+        """
+        Evaluates the recent state history of a track to detect crossings,
+        incorporating a frame-based cooldown to completely eliminate the ping-pong effect.
+        """
+        # Check if the ID is currently under cooldown protection
+        current_frame = self.frame_index
+        last_match_frame = self.cooldown_counters.get(track_id, 0)
+
+        if last_match_frame > 0 and (current_frame - last_match_frame) < 45:
+            # ID is locked, ignore any transition to prevent double counting
+            return
+
+        # Look for entry pattern: DOOR followed by INSIDE
+        if len(history) >= 2 and history[-2] == 'DOOR' and history[-1] == 'INSIDE':
+            self.in_count += 1
+            self.cooldown_counters[track_id] = current_frame
+            msg = f"User ID #{track_id} Entered."
+            print(f"[MATCH ENTRY !] -> {msg}")
+            self._write_log(f"COUNT: {msg}")
+            history.clear()
+
+        # Look for exit pattern: INSIDE followed by DOOR
+        elif len(history) >= 2 and history[-2] == 'INSIDE' and history[-1] == 'DOOR':
+            self.out_count += 1
+            self.cooldown_counters[track_id] = current_frame
+            msg = f"User ID #{track_id} Exited."
+            print(f"[MATCH EXIT !] -> {msg}")
+            self._write_log(f"COUNT: {msg}")
+            history.clear()
